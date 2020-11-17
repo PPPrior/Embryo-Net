@@ -90,6 +90,7 @@ def _vgg(arch, cfg, batch_norm, pretrained, progress, **kwargs):
         state_dict = load_state_dict_from_url(model_urls[arch],
                                               progress=progress)
         model.load_state_dict(state_dict)
+    # model.features.add_module('0', nn.Conv2d(1, 64, kernel_size=3, padding=1))
     return model
 
 

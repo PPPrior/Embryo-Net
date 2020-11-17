@@ -26,7 +26,7 @@ class BCNN(torch.nn.Module):
         torch.nn.Module.__init__(self)
         # Convolution and pooling layers of VGG-16.
         self.num_classes = num_classes
-        self.features = vgg16(pretrained=False).features
+        self.features = vgg16(pretrained=True).features
         self.features = torch.nn.Sequential(*list(self.features.children())[:-1])  # Remove pool5.
         # Linear classifier.
         self.fc = torch.nn.Linear(512 ** 2, num_classes)

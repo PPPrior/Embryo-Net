@@ -9,9 +9,12 @@ from skimage import io
 import numpy as np
 
 
-def _get_path(rootpth):
-    pos = glob.glob(rootpth + '/*' * 2 + '/P*' + '[5-8].jpg')
-    neg = glob.glob(rootpth + '/*' * 2 + '/NP*' + '[5-8].jpg')
+def _get_path(rootpth, date):
+    # dataset1
+    pos = glob.glob(rootpth + '/*' * 2 + '/P*' + date + '.jpg')
+    neg = glob.glob(rootpth + '/*' * 2 + '/NP*' + date + '.jpg')
+    # dataset2
+    pos += glob.glob(rootpth + '/*' * 2 + '/*' + date + '-[0-9][0-9]' + '.jpg')
     return pos, neg
 
 
@@ -42,10 +45,11 @@ def _crop(image, x, y, w=256):  # image H x W x C
     return image
 
 
-def get_data(root):
-    pos, neg = _get_path(root)
+def get_data(root, date):
+    pos, neg = _get_path(root, date)
     image = pos + neg
     label = np.append(np.ones(len(pos), dtype=int), np.zeros(len(neg), dtype=int))
+
     return image, label
 
 
@@ -64,3 +68,4 @@ def save_image(image, path):
     if not osp.exists(dir):
         os.makedirs(dir)
     io.imsave(path, image)
+    print(f'{path} Done.')
