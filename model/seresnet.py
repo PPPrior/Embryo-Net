@@ -4,6 +4,8 @@ from .se import SE
 from .resnet import ResNet
 from .resnet import model_urls
 
+__all__ = ['seresnet18', 'seresnet34', 'seresnet50', 'seresnet101', 'seresnet152', 'seresnext50', 'seresnext101']
+
 
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
     """3x3 convolution with padding"""
