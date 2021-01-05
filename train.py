@@ -3,6 +3,7 @@ import time
 
 from torch import optim
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
@@ -20,11 +21,11 @@ best_acc = 0
 def main():
     global best_acc
     data_path = r'/mnt/data2/like/data/embryo/cropped'
-    phase = '[1-6]h'  # in ('D[4-8]', '脱水后', '0h', '[1-6]h')
+    phase = '0h'  # in ('D[4-8]', '脱水后', '0h', '[1-6]h')
     test_size = 0.2
     epochs = 60
     batch_size = 16
-    lr = 0.0001
+    lr = 0.0002
 
     # model loading
     os.environ["CUDA_VISIBLE_DEVICES"] = "3"
@@ -62,7 +63,7 @@ def main():
                       # ])
                       ),
         batch_size=batch_size, shuffle=True,
-        num_workers=8, pin_memory=True)
+        num_workers=0, pin_memory=True)
     valid_dl = DataLoader(
         EmbryoDataset(valid_paths, valid_labels,
                       # transform=Compose([
@@ -82,7 +83,7 @@ def main():
                       # ])
                       ),
         batch_size=batch_size, shuffle=False,
-        num_workers=8, pin_memory=True, drop_last=False)
+        num_workers=0, pin_memory=True, drop_last=False)
 
     # config optimizer
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
@@ -102,7 +103,8 @@ def main():
                CrossEntropy:    {ce}
            ''')
 
-    cm, pred = None, None
+    cm, pred, p = None, None, None
+    # m = torch.nn.Softmax(dim=0)
     for epoch in range(epochs):
         # train for one epoch
         train(train_dl, model, criterion, optimizer, epoch)
@@ -110,11 +112,13 @@ def main():
 
         # evaluate on validation set
         if (epoch + 1) % 1 == 0:
-            acc, rst, p = validate(valid_dl, model, criterion)
+            acc, rst = validate(valid_dl, model, criterion)
 
             if acc >= best_acc:
                 best_acc = acc
-                pred = [np.argmax(x) for x in rst]
+                # pred = [np.argmax(x) for x in rst]
+                pred = np.argmax([x.cpu().numpy() for x in rst], axis=1)
+                p = [F.softmax(x, dim=0).cpu().numpy() for x in rst]
                 cm = confusion_matrix(valid_labels, pred)
             # TODO: remember best accuracy and save checkpoint
 
@@ -175,8 +179,7 @@ def validate(val_loader, model, criterion):
     batch_time = AverageMeter()
     losses = AverageMeter()
     acc = AverageMeter()
-    rst, p = [], []
-    m = torch.nn.Softmax(dim=1)
+    rst = []
 
     # switch to evaluate mode
     model.eval()
@@ -188,8 +191,7 @@ def validate(val_loader, model, criterion):
             output = model(input)
             loss = criterion(output, target)
 
-            rst.extend(output.cpu().numpy())
-            p.extend(m(output))
+            rst.extend(output)
             # measure accuracy and record loss
             prec1, = accuracy(output.data, target, topk=(1,))
             losses.update(loss.item(), input.size(0))
@@ -206,7 +208,7 @@ def validate(val_loader, model, criterion):
     print(('\033[32mTesting Results: Accuracy {acc.avg:.3f} Loss {loss.avg:.5f}\033[0m'
            .format(acc=acc, loss=losses)))
 
-    return acc.avg, rst, p
+    return acc.avg, rst
 
 
 def evaluate(cm, ps, path, target, pred):
@@ -230,7 +232,7 @@ Specificity:{specificity * 100:.2f}%
     ''')
 
     for i, t in enumerate(target):
-        print(f'{i}, {t}, {pred[i]}, {ps[i].cpu().numpy()}, {path[i][0]}')
+        print(f'{i}, {t}, {pred[i]}, {ps[i]}, {path[i][0]}')
 
 
 if __name__ == '__main__':
