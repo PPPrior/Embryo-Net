@@ -1,66 +1,92 @@
 import os
 import time
 
-import numpy as np
 from torch import optim
 from torch.utils.data import DataLoader
-from torchvision.transforms import *
 from tensorboardX import SummaryWriter
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
 
 from data import EmbryoDataset, get_data
+from data.transforms import *
+from utils import AverageMeter, accuracy
 from model import *
 
 writer = SummaryWriter()
 iteration = 0
+best_acc = 0
 
 
 def main():
+    global best_acc
     data_path = r'/mnt/data2/like/data/embryo/cropped'
-    phase = '脱水后'
+    phase = '[1-6]h'  # in ('D[4-8]', '脱水后', '0h', '[1-6]h')
     test_size = 0.2
-    epochs = 80
+    epochs = 60
     batch_size = 16
     lr = 0.0001
 
     # model loading
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    model = seresnet18(num_classes=2, pretrained=True)
+    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+    # model = seresnet18(num_classes=2, pretrained=True)
+    model = Fusion('seresnet18', 'max')
     model = nn.DataParallel(model).cuda()
 
     # data loading
-    image_paths, label = get_data(data_path, phase)
+    # image_paths, label = get_data(data_path, phase)
+    # TODO: fusion
+    image_paths, label = get_data(data_path)
     train_paths, valid_paths, train_labels, valid_labels = train_test_split(image_paths, label, test_size=test_size,
                                                                             random_state=1998, stratify=label)
     n_train, n_valid = len(train_paths), len(valid_paths)
 
     train_dl = DataLoader(
         EmbryoDataset(train_paths, train_labels,
-                      transform=Compose([
-                          RandomCrop(448),
-                          RandomHorizontalFlip(),
-                          RandomVerticalFlip(),
-                          ColorJitter(),
-                          ToTensor(),
-                          Normalize((0.485, 0.456, 0.406),
-                                    (0.229, 0.224, 0.225)),
-                      ])),
+                      # transform=Compose([
+                      #     RandomCrop(488),
+                      #     RandomHorizontalFlip(),
+                      #     RandomVerticalFlip(),
+                      #     ColorJitter(),
+                      #     ToTensor(),
+                      #     # Normalize((0.485, 0.456, 0.406),
+                      #     #           (0.229, 0.224, 0.225)),
+                      #     # Normalize((0.501, 0.436, 0.233),
+                      #     #           (0.126, 0.113, 0.094)),
+                      # ])
+                      # transform=Compose([
+                      #     GroupCenterCrop(488),
+                      #     Stack(),
+                      #     ToTorchFormatTensor(),
+                      #     GroupNormalize((0.501, 0.436, 0.233),
+                      #                    (0.126, 0.113, 0.094)),
+                      # ])
+                      ),
         batch_size=batch_size, shuffle=True,
         num_workers=8, pin_memory=True)
     valid_dl = DataLoader(
         EmbryoDataset(valid_paths, valid_labels,
-                      transform=Compose([
-                          CenterCrop(448),
-                          ToTensor(),
-                          Normalize((0.485, 0.456, 0.406),
-                                    (0.229, 0.224, 0.225)),
-                      ])),
-        batch_size=batch_size // 2, shuffle=False,
-        num_workers=8, pin_memory=True, drop_last=True)
+                      # transform=Compose([
+                      #     CenterCrop(488),
+                      #     ToTensor(),
+                      #     # Normalize((0.485, 0.456, 0.406),
+                      #     #           (0.229, 0.224, 0.225)),
+                      #     # Normalize((0.501, 0.436, 0.233),
+                      #     #           (0.126, 0.113, 0.094)),
+                      # ])
+                      # transform=Compose([
+                      #     GroupCenterCrop(488),
+                      #     Stack(),
+                      #     ToTorchFormatTensor(),
+                      #     GroupNormalize((0.501, 0.436, 0.233),
+                      #                    (0.126, 0.113, 0.094)),
+                      # ])
+                      ),
+        batch_size=batch_size, shuffle=False,
+        num_workers=8, pin_memory=True, drop_last=False)
 
     # config optimizer
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
-    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60], gamma=0.5)
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[120, 170], gamma=0.5)
     criterion = nn.CrossEntropyLoss()
 
     # print info
@@ -76,19 +102,26 @@ def main():
                CrossEntropy:    {ce}
            ''')
 
+    cm, pred = None, None
     for epoch in range(epochs):
         # train for one epoch
-        train(train_dl, model, criterion, optimizer, scheduler, epoch)
+        train(train_dl, model, criterion, optimizer, epoch)
         scheduler.step()
 
         # evaluate on validation set
         if (epoch + 1) % 1 == 0:
-            acc = validate(valid_dl, model, criterion)
+            acc, rst, p = validate(valid_dl, model, criterion)
 
+            if acc >= best_acc:
+                best_acc = acc
+                pred = [np.argmax(x) for x in rst]
+                cm = confusion_matrix(valid_labels, pred)
             # TODO: remember best accuracy and save checkpoint
 
+    evaluate(cm, p, valid_paths, valid_labels, pred)
 
-def train(train_loader, model, criterion, optimizer, scheduler, epoch):
+
+def train(train_loader, model, criterion, optimizer, epoch):
     global writer, iteration
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -142,24 +175,29 @@ def validate(val_loader, model, criterion):
     batch_time = AverageMeter()
     losses = AverageMeter()
     acc = AverageMeter()
+    rst, p = [], []
+    m = torch.nn.Softmax(dim=1)
 
     # switch to evaluate mode
     model.eval()
 
     end = time.time()
-    for i, (input, target) in enumerate(val_loader):
-        target = target.cuda()
-        output = model(input)
-        loss = criterion(output, target)
+    with torch.no_grad():
+        for i, (input, target) in enumerate(val_loader):
+            target = target.cuda()
+            output = model(input)
+            loss = criterion(output, target)
 
-        # measure accuracy and record loss
-        prec1, = accuracy(output.data, target, topk=(1,))
-        losses.update(loss.item(), input.size(0))
-        acc.update(prec1.item(), input.size(0))
+            rst.extend(output.cpu().numpy())
+            p.extend(m(output))
+            # measure accuracy and record loss
+            prec1, = accuracy(output.data, target, topk=(1,))
+            losses.update(loss.item(), input.size(0))
+            acc.update(prec1.item(), input.size(0))
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
     # tensorboard
     writer.add_scalar('Loss/test', losses.avg, iteration)
@@ -168,42 +206,31 @@ def validate(val_loader, model, criterion):
     print(('\033[32mTesting Results: Accuracy {acc.avg:.3f} Loss {loss.avg:.5f}\033[0m'
            .format(acc=acc, loss=losses)))
 
-    return acc.avg
+    return acc.avg, rst, p
 
 
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
+def evaluate(cm, ps, path, target, pred):
+    print("Confusion matrix")
+    print(cm)
+    tn, fp, fn, tp = cm.ravel()
+    accuracy = (tn + tp) / (tn + fp + fn + tp)
+    precision = tp / (fp + tp)
+    recall = tp / (fn + tp)
+    f1 = 2 * precision * recall / (precision + recall)
+    sensitivity = tp / (fn + tp)
+    specificity = tn / (tn + fp)
 
-    def __init__(self):
-        self.reset()
+    print(f'''
+Accuracy:   {accuracy * 100:.2f}%
+Precision:  {precision * 100:.2f}%
+Recall:     {recall * 100:.2f}%
+F1 score:   {f1 * 100:.2f}%
+Sensitivity:{sensitivity * 100:.2f}%
+Specificity:{specificity * 100:.2f}%
+    ''')
 
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
-
-
-def accuracy(output, target, topk=(1,)):
-    """Computes the precision@k for the specified values of k"""
-    maxk = max(topk)
-    batch_size = target.size(0)
-
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batch_size))
-    return res
+    for i, t in enumerate(target):
+        print(f'{i}, {t}, {pred[i]}, {ps[i].cpu().numpy()}, {path[i][0]}')
 
 
 if __name__ == '__main__':
