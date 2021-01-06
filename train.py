@@ -232,7 +232,7 @@ Specificity:{specificity * 100:.2f}%
     ''')
 
     for i, t in enumerate(target):
-        print(f'{i}, {t}, {pred[i]}, {ps[i]}, {path[i][0]}')
+        print(f'{i}, {t}, {pred[i]}, {ps[i]}, {path[i]}')
 
 
 if __name__ == '__main__':
